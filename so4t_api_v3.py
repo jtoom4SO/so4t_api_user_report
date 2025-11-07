@@ -4,10 +4,13 @@ import json
 # Third-party libraries
 import requests
 
+# Local libraries
+import so4t_request_validate
+
 
 class V3Client(object):
 
-    def __init__(self, url, token):
+    def __init__(self, url, token, proxy=None):
 
         print("Initializing API v3 client...")
 
@@ -21,15 +24,18 @@ class V3Client(object):
         else:
             self.token = token
             self.headers = {
+                #Updated User-Agent
                 'Authorization': f'Bearer {self.token}',
-                'User-Agent': 'so4t_api_user_report/1.0 (http://your-app-url.com; your-contact@email.com)'
+                'User-Agent': 'so4t_tag_report/1.0 (http://your-app-url.com; your-contact@email.com)'
             }
 
-        if "stackoverflowteams.com" in url: # Stack Overflow Business or Basic
+        if "stackoverflowteams.com" in url: # Stack Internal (Business) or Basic
             self.team_slug = url.split("https://stackoverflowteams.com/c/")[1]
             self.api_url = f"https://api.stackoverflowteams.com/v3/teams/{self.team_slug}"
-        else: # Stack Overflow Enterprise
+        else: # Stack Internal (Enterprise)
             self.api_url = url + "/api/v3"
+
+        self.proxies = {'https': proxy} if proxy else {'https': None}
 
         self.ssl_verify = self.test_connection() # test the API connection
 
@@ -42,10 +48,12 @@ class V3Client(object):
 
         print("Testing API v3 connection...")
         try:
-            response = requests.get(endpoint_url, headers=self.headers)
+            response = requests.get(endpoint_url, headers=self.headers, 
+                                    proxies=self.proxies)
         except requests.exceptions.SSLError:
             print("SSL error. Trying again without SSL verification...")
-            response = requests.get(endpoint_url, headers=self.headers, verify=False)
+            response = requests.get(endpoint_url, headers=self.headers, verify=False, 
+                                    proxies=self.proxies)
             ssl_verify = False
         
         if response.status_code == 200:
@@ -93,15 +101,6 @@ class V3Client(object):
         return smes
 
 
-    def get_user(self, user_id):
-
-        method = "get"
-        endpoint = f"/users/{user_id}"
-        user = self.send_api_call(method, endpoint)
-
-        return user
-    
-
     def get_all_users(self):
             
             method = "get"
@@ -122,23 +121,27 @@ class V3Client(object):
 
         data = []
         while True:
-            if method == 'get':
-                response = get_response(endpoint_url, headers=self.headers, params=params, 
-                                        verify=self.ssl_verify)
-            else:
-                response = get_response(endpoint_url, headers=self.headers, json=params, 
-                                        verify=self.ssl_verify)
+            try:
+                if method == 'get':
+                    response = get_response(endpoint_url, headers=self.headers, params=params, 
+                                            verify=self.ssl_verify, proxies=self.proxies, timeout=so4t_request_validate.timeout)
+                else:
+                    response = get_response(endpoint_url, headers=self.headers, json=params, 
+                                            verify=self.ssl_verify, proxies=self.proxies, timeout=so4t_request_validate.timeout)
+            except Exception as ex:
+                so4t_request_validate.handle_except(ex)
+                continue
 
             if response.status_code not in [200, 201, 204]:
                 print(f"API call to {endpoint_url} failed with status code {response.status_code}")
-                print(f"Response from server: {response.text}")
+                print(response.text)
                 raise SystemExit
                         
             try:
                 json_data = response.json()
             except json.decoder.JSONDecodeError: # some API calls do not return JSON data
                 print(f"API request successfully sent to {endpoint_url}")
-                return
+                break
 
             if type(params) == dict and params.get('page'): # check request for pagination
                 print(f"Received page {params['page']} from {endpoint_url}")
@@ -146,6 +149,7 @@ class V3Client(object):
                 if params['page'] == json_data['totalPages']:
                     break
                 params['page'] += 1
+                so4t_request_validate.retry_count = 0
             else:
                 print(f"API request successfully sent to {endpoint_url}")
                 data = json_data
